@@ -60,27 +60,6 @@ PREGUNTA:
 RESPUESTA:"""
 
 
-def _ask_ollama(prompt: str) -> str:
-    try:
-        response = requests.post(
-            f"{config.AI_API_URL}/api/generate",
-            json={"model": config.AI_MODEL, "prompt": prompt, "stream": False},
-            timeout=180
-        )
-        response.raise_for_status()
-        return response.json().get("response", "").strip()
-    except requests.exceptions.ConnectionError:
-        return f"Error: No se pudo conectar con Ollama en {config.AI_API_URL}"
-    except requests.exceptions.Timeout:
-        return "Error: Ollama tardo demasiado en responder."
-    except Exception as e:
-        try:
-            detail = e.response.text if hasattr(e, "response") else str(e)
-        except Exception:
-            detail = str(e)
-        return f"Error al consultar Ollama: {detail}"
-
-
 def _ask_claude(prompt: str) -> str:
     if not config.ANTHROPIC_API_KEY:
         return "Error: ANTHROPIC_API_KEY no esta configurada en .env"
@@ -97,7 +76,7 @@ def _ask_claude(prompt: str) -> str:
                 "max_tokens": config.AI_MAX_TOKENS,
                 "messages": [{"role": "user", "content": prompt}]
             },
-            timeout=60
+            timeout=120
         )
         response.raise_for_status()
         return response.json()["content"][0]["text"].strip()
@@ -153,6 +132,46 @@ def _ask_gpt(prompt: str) -> str:
         return f"Error al consultar GPT: {e}"
 
 
+
+def _ask_ollama(prompt: str) -> str:
+    try:
+        response = requests.post(
+            f"{config.AI_API_URL}/api/generate",
+            json={"model": config.AI_MODEL, "prompt": prompt, "stream": False},
+            timeout=180
+        )
+        response.raise_for_status()
+        return response.json().get("response", "").strip()
+    except requests.exceptions.ConnectionError:
+        return f"Error: No se pudo conectar con Ollama en {config.AI_API_URL}"
+    except requests.exceptions.Timeout:
+        return "Error: Ollama tardo demasiado en responder."
+    except Exception as e:
+        try:
+            detail = e.response.text if hasattr(e, "response") else str(e)
+        except Exception:
+            detail = str(e)
+        return f"Error al consultar Ollama: {detail}"
+
+
+# ── Registry de proveedores ────────────────────────────────────────────────
+# Para agregar un nuevo proveedor: añade una entrada aqui y crea su _ask_xxx.
+_PROVIDERS: dict[str, object] = {
+    "claude": _ask_claude,
+    "gpt":    _ask_gpt,
+    "github": _ask_gpt,    
+    "ollama": _ask_ollama,
+}
+
+
+def _call_provider(prompt: str, selected: str) -> str:
+    fn = _PROVIDERS.get(selected)
+    if fn is None:
+        available = ", ".join(_PROVIDERS)
+        return f"Error: proveedor '{selected}' no disponible. Opciones: {available}."
+    return fn(prompt)
+
+
 def _clean_markdown(text: str) -> str:
     """
     Elimina marcas markdown de la respuesta para que se vea como texto plano.
@@ -196,13 +215,7 @@ def ask_ai(question: str, context: list[dict], provider: str | None = None, syst
     """Envia la pregunta y el contexto al proveedor de IA. Filtra la respuesta antes de devolverla."""
     prompt = _build_prompt(question, context, system_context=system_context)
     selected = (provider or config.AI_PROVIDER).lower()
-
-    if selected == "claude":
-        raw = _ask_claude(prompt)
-    elif selected in ("gpt", "github"):
-        raw = _ask_gpt(prompt)
-    else:
-        raw = _ask_ollama(prompt)
+    raw = _call_provider(prompt, selected)
 
     cleaned = _clean_markdown(raw)
 
@@ -219,3 +232,63 @@ def ask_ai(question: str, context: list[dict], provider: str | None = None, syst
 
     filtered = post_filter_response(human_part)
     return filtered + json_part
+
+
+def _build_planeamiento_prompt(question: str, contexto: str) -> str:
+    return f"""Eres un experto en planificacion educativa peruana (CNEB). Genera una sesion de aprendizaje completa.
+
+CONTEXTO PROPORCIONADO POR EL SISTEMA:
+{contexto}
+
+SOLICITUD: {question}
+
+════════════════════════════════════════════════════
+REGLA ABSOLUTA DE FORMATO — NUNCA VIOLAR
+════════════════════════════════════════════════════
+Tu respuesta DEBE comenzar con la primera etiqueta (TITULO:) y SOLO debe contener las etiquetas listadas abajo, en ese orden exacto, sin texto introductorio ni conclusiones.
+
+NUNCA uses: *, **, #, ---, guiones decorativos, bullets •, corchetes [], comillas tipograficas ni ningun marcador markdown.
+NUNCA omitas una etiqueta aunque el campo este vacio (escribe la etiqueta y deja el valor en blanco).
+NUNCA agregues etiquetas distintas a las del formato.
+NUNCA pongas dos etiquetas en la misma linea.
+NUNCA escribas texto entre secciones (entre TIEMPO_INICIO: y DESARROLLO:, por ejemplo).
+
+════════════════════════════════════════════════════
+FORMATO EXACTO (copia las etiquetas tal como aparecen)
+════════════════════════════════════════════════════
+TITULO: [una sola linea con el titulo de la sesion]
+PROPOSITO: [una sola oracion clara y medible, max 3 lineas]
+COMPETENCIA: [competencia CNEB, max 2 lineas]
+CAPACIDAD: [capacidad especifica, max 2 lineas]
+DESEMPENO: [desempeno precisado, max 4 lineas]
+EVIDENCIAS: [evidencias concretas, max 3 lineas]
+INSTRUMENTO: [instrumento de evaluacion, max 2 lineas]
+INICIO:
+[Actividades de inicio. Subtitulos en MAYUSCULAS con dos puntos. Actividades numeradas 1. 2. 3. Minimo 6, maximo 10 actividades. Cada actividad: 1-3 oraciones directas sin adornos.]
+MATERIALES_INICIO: [materiales separados por coma, todo en una linea]
+TIEMPO_INICIO: 15
+DESARROLLO:
+[Actividades de desarrollo. Subtitulos en MAYUSCULAS con dos puntos. Actividades numeradas 1. 2. 3. Minimo 8, maximo 14 actividades. Cada actividad: 1-3 oraciones directas.]
+MATERIALES_DESARROLLO: [materiales separados por coma, todo en una linea]
+TIEMPO_DESARROLLO: 45
+SALIDA:
+[Actividades de cierre. Subtitulos en MAYUSCULAS con dos puntos. Actividades numeradas 1. 2. 3. Minimo 3, maximo 6 actividades.]
+MATERIALES_SALIDA: [materiales separados por coma, todo en una linea]
+TIEMPO_SALIDA: 10
+
+════════════════════════════════════════════════════
+INSTRUCCIONES DE CONTENIDO
+════════════════════════════════════════════════════
+- Texto plano. Sin markdown. Sin simbolos decorativos.
+- Subtitulos internos SOLO en MAYUSCULAS seguidos de dos puntos (MOTIVACION:, PROBLEMATIZACION:, etc.).
+- Actividades numeradas con numero y punto: 1. 2. 3.
+- Contenido especifico al area, grado y competencia indicados.
+- Cada oracion termina con punto. Sin frases incompletas.
+"""
+
+
+def ask_ai_planeamiento(question: str, contexto: str, provider: str | None = None) -> str:
+    """Genera contenido estructurado para planificacion educativa peruana."""
+    prompt = _build_planeamiento_prompt(question, contexto)
+    selected = (provider or config.AI_PROVIDER).lower()
+    return _call_provider(prompt, selected)

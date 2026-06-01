@@ -75,6 +75,8 @@ def _build_joined_query(
 
     for rel in fk_joins:
         target = rel["target_table"]
+        if target in joined_cols:  # ya unido por otro FK a la misma tabla
+            continue
         src_col = rel["source_col"]
         tgt_col = rel["target_col"]
         target_cols = get_table_columns(target)
@@ -127,7 +129,14 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
         effective_allowed = requested & config.ALLOWED_TABLES  # techo de seguridad
     else:
         effective_allowed = config.ALLOWED_TABLES
-
+    # Aliases por request: base del .env + overrides del cliente (solo tablas en effective_allowed)
+    request_aliases = dict(config.TABLE_ALIASES)
+    if extra_params and isinstance(extra_params.get("alias"), dict):
+        for logical, real in extra_params["alias"].items():
+            if isinstance(logical, str) and isinstance(real, str):
+                real_lower = real.strip().lower()
+                if real_lower in effective_allowed:
+                    request_aliases[logical.strip().lower()] = real_lower
     words = {w.strip("?.,;:()[]{}'").lower() for w in question.split()}
 
     results = []
@@ -153,12 +162,12 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
         # config.TABLE_ALIASES = {"alumno": "ist_alumno", ...}
         for w in list(words):
             # alias exacto
-            real = config.TABLE_ALIASES.get(w)
+            real = request_aliases.get(w)
             if real and real in all_tables:
                 tables_in_question.add(real)
             # alias plural (sin 's')
             if w.endswith("s"):
-                real = config.TABLE_ALIASES.get(w[:-1])
+                real = request_aliases.get(w[:-1])
                 if real and real in all_tables:
                     tables_in_question.add(real)
 
@@ -205,6 +214,8 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
 
                     col_list = ", ".join(f'"{c}"' for c in columns)
 
+                    rows_before = len(results)
+
                     if extra_keywords:
                         # Intentar detectar filtro exacto: "CON configcod INTRANET"
                         col_filter = _extract_column_filter(question, columns)
@@ -240,11 +251,16 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
                                 results.extend(_build_joined_query(
                                     table_name, columns, cursor
                                 ))
-                    else:
-                        # Sin keywords extra: listar tabla completa con JOINs
+
+                    # Si la tabla fue detectada explicitamente pero los keywords no
+                    # produjeron resultados (son palabras descriptivas de la pregunta,
+                    # no valores reales de la DB), hacer un query general sin filtro.
+                    if len(results) == rows_before:
                         results.extend(_build_joined_query(
                             table_name, columns, cursor
                         ))
+                    elif not extra_keywords:
+                        pass  # ya hay resultados del bloque extra_keywords=False
 
                 except Exception:
                     conn.rollback()

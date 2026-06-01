@@ -76,6 +76,10 @@ def load_foreign_keys() -> None:
                 ON rc.unique_constraint_name = ccu.constraint_name
                 AND rc.unique_constraint_schema = ccu.constraint_schema
             WHERE kcu.table_schema = 'public'
+            ORDER BY
+                -- Preferir FKs donde source_col = target_col (relacion directa de identidad)
+                CASE WHEN kcu.column_name = ccu.column_name THEN 0 ELSE 1 END,
+                kcu.table_name, kcu.column_name
         """)
         rows = cur.fetchall()
         cur.close()
