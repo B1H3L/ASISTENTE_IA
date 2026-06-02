@@ -61,13 +61,20 @@ RESPUESTA:"""
 
 
 def _ask_claude(prompt: str) -> str:
-    if not config.ANTHROPIC_API_KEY:
+    from pathlib import Path
+    key = config.ANTHROPIC_API_KEY
+    if not key:
+        for _l in (Path(__file__).parent / ".env").read_text("utf-8-sig").splitlines():
+            if _l.strip().startswith("ANTHROPIC_API_KEY="):
+                key = _l.strip().split("=", 1)[1].strip()
+                break
+    if not key:
         return "Error: ANTHROPIC_API_KEY no esta configurada en .env"
     try:
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": config.ANTHROPIC_API_KEY,
+                "x-api-key": key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
             },
@@ -86,7 +93,7 @@ def _ask_claude(prompt: str) -> str:
             try:
                 r = requests.get(
                     "https://api.anthropic.com/v1/models",
-                    headers={"x-api-key": config.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01"},
+                    headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
                     timeout=10
                 )
                 models = [m["id"] for m in r.json().get("data", [])]
@@ -291,4 +298,64 @@ def ask_ai_planeamiento(question: str, contexto: str, provider: str | None = Non
     """Genera contenido estructurado para planificacion educativa peruana."""
     prompt = _build_planeamiento_prompt(question, contexto)
     selected = (provider or config.AI_PROVIDER).lower()
+    return _call_provider(prompt, selected)
+
+
+def _build_libro_prompt(contexto: str, instrucciones: str) -> str:
+    inst_block = f"\nINSTRUCCIONES ADICIONALES:\n{instrucciones}\n" if instrucciones.strip() else ""
+    return f"""Eres un experto en creacion de libros digitales, brochures corporativos y documentos de marketing de alto nivel.
+Tu tarea es generar el contenido completo de un libro/brochure digital basado en el contexto proporcionado.
+
+CONTEXTO:
+{contexto}
+{inst_block}
+Genera el contenido en formato JSON con EXACTAMENTE esta estructura. RESPONDE SOLO CON EL JSON PURO, sin markdown, sin explicaciones, sin texto adicional:
+
+{{
+  "titulo": "Titulo principal del libro (maximo 60 caracteres, impactante)",
+  "tagline": "Subtitulo o frase gancho (maximo 100 caracteres)",
+  "descripcion": "Parrafo introductorio de 2-3 oraciones que resume el tema",
+  "color_primario": "#rrggbb (color hex coherente con la industria/tema)",
+  "stats": [
+    {{"valor": "N+", "etiqueta": "descripcion corta en mayusculas"}},
+    {{"valor": "N+", "etiqueta": "descripcion corta en mayusculas"}},
+    {{"valor": "N+", "etiqueta": "descripcion corta en mayusculas"}},
+    {{"valor": "N+", "etiqueta": "descripcion corta en mayusculas"}}
+  ],
+  "que_es": "Parrafo de 2-3 oraciones respondiendo que es o en que consiste",
+  "como_ayuda": "Parrafo de 2-3 oraciones sobre beneficios y valor que aporta",
+  "secciones": [
+    {{
+      "titulo": "Nombre de la seccion (maximo 40 caracteres)",
+      "descripcion": "Una o dos oraciones describiendo la seccion",
+      "items": ["feature o punto clave 1", "feature o punto clave 2", "feature o punto clave 3"]
+    }}
+  ],
+  "conclusion": "Parrafo final de cierre con llamada a la accion (2-3 oraciones)",
+  "contacto": {{
+    "email": "correo@ejemplo.com",
+    "telefono": "XXX XXX XXX",
+    "web": "www.ejemplo.com"
+  }}
+}}
+
+REGLAS:
+- Genera entre 4 y 8 secciones segun la complejidad del tema
+- Cada seccion debe tener entre 5 y 10 items especificos y relevantes
+- Los stats deben ser numeros creibles y relacionados al contexto (puedes inventarlos si no hay datos)
+- color_primario coherente con industria: tecnologia=#2980b9, salud=#27ae60, educacion=#8e44ad, finanzas=#c0392b, logistica=#e67e22, construccion=#795548
+- Si el contexto incluye datos de contacto reales, usarlos; si no, generar ejemplos coherentes
+- Todo el texto en espanol, profesional y directo
+- SOLO JSON, nada mas"""
+
+
+def ask_ai_libro(contexto: str, instrucciones: str = "", provider: str | None = None) -> str:
+    """Genera contenido JSON estructurado para un libro/brochure digital."""
+    import sys
+    #print(f"[libro] provider={provider} KEY={'SET' if config.ANTHROPIC_API_KEY else 'EMPTY'} AI_PROVIDER={config.AI_PROVIDER}", file=sys.stderr, flush=True)
+    prompt = _build_libro_prompt(contexto, instrucciones)
+    selected = (provider or config.AI_PROVIDER).lower()
+    #print("provider recibido =", provider)
+    #print("AI_PROVIDER =", config.AI_PROVIDER)
+    #print("selected =", selected)
     return _call_provider(prompt, selected)

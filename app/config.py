@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 # Carga las variables desde el archivo .env
 load_dotenv()
 
+#print("CWD =", os.getcwd())
+#print("ENV =", os.getenv("ANTHROPIC_API_KEY"))
 # Configuración de la base de datos
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")

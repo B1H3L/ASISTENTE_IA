@@ -3,10 +3,10 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 from typing import Literal
 from searcher import search_relevant_data, ACCESS_DENIED
-from ai_client import ask_ai, ask_ai_planeamiento
+from ai_client import ask_ai, ask_ai_planeamiento, ask_ai_libro
 from acl import validate_question
 from query_cache import get_cached_response, save_to_cache
-from pdf_builder import build_pdf_reporte, build_pdf_planificacion, extract_json_block
+from pdf_builder import build_pdf_reporte, build_pdf_planificacion, build_pdf_libro, extract_json_block
 
 router = APIRouter()
 
@@ -93,6 +93,24 @@ def query(request: QueryRequest):
             provider_used=f"{cached['provider']} (cache)",
         )
 
+    # ── Modo libro: genera brochure/libro digital sin consultar DB ───────────
+    if extra.get("tipo", "").lower() == "libro":
+        import json as _json
+        contexto      = extra.get("contexto", request.question)
+        instrucciones = extra.get("instrucciones", "")
+        answer        = ask_ai_libro(contexto, instrucciones, provider=request.provider)
+        wants_pdf     = extra.get("formato", "").lower() == "pdf" or _wants_pdf(request.question)
+        if wants_pdf:
+            try:
+                libro_data = _json.loads(answer)
+            except _json.JSONDecodeError:
+                libro_data = {"titulo": contexto[:60], "tagline": "", "secciones": [],
+                              "stats": [], "conclusion": answer, "contacto": {}}
+            return _pdf_response("libro.pdf", build_pdf_libro(libro_data))
+        return QueryResponse(question=request.question, context_found=0,
+                             answer=answer, data=None,
+                             provider_used=request.provider or "default (.env)")
+
     # ── Modo planeamiento: genera contenido sin consultar DB ──────────────────
     if extra.get("tipo", "").lower() == "planeamiento":
         contexto = _build_system_ctx(extra) or ""
@@ -125,7 +143,7 @@ def query(request: QueryRequest):
     if _wants_pdf(request.question):
         return _pdf_response("respuesta.pdf", build_pdf_reporte(request.question, answer))
 
-    if use_cache:
+    if use_cache and not answer_clean.startswith("Error:"):
         save_to_cache(request.question, answer_clean, len(context), provider_used)
 
     return QueryResponse(

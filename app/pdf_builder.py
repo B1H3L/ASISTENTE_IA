@@ -68,6 +68,329 @@ def extract_json_block(text: str) -> tuple[list | dict | None, str]:
 # PDF genérico de reporte
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    """Convierte '#rrggbb' a (r, g, b). Fallback a azul oscuro si falla."""
+    try:
+        h = hex_color.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except Exception:
+        return 41, 128, 185
+
+
+def _lighten(r: int, g: int, b: int, factor: float = 0.35) -> tuple[int, int, int]:
+    """Aclara un color mezclándolo con blanco."""
+    return (
+        min(255, int(r + (255 - r) * factor)),
+        min(255, int(g + (255 - g) * factor)),
+        min(255, int(b + (255 - b) * factor)),
+    )
+
+
+class _LibroPDF(FPDF):
+    """PDF estilo magazine/brochure para libros digitales generados por IA."""
+
+    def __init__(self, color_primario: str = "#2c3e50", titulo: str = ""):
+        super().__init__()
+        self._pr, self._pg, self._pb = _hex_to_rgb(color_primario)
+        self._lr, self._lg, self._lb = _lighten(self._pr, self._pg, self._pb, 0.6)
+        self._titulo = titulo
+        self.set_margins(0, 0, 0)
+        self.set_auto_page_break(auto=False)
+
+    def _full_bg(self, r: int, g: int, b: int) -> None:
+        self.set_fill_color(r, g, b)
+        self.rect(0, 0, self.w, self.h, style="F")
+
+    def _accent_bar(self, y: float, h: float = 1.5) -> None:
+        self.set_fill_color(self._pr, self._pg, self._pb)
+        self.rect(0, y, self.w, h, style="F")
+
+    def _header_band(self, y: float, height: float, text: str, font_size: int = 11) -> None:
+        self.set_fill_color(self._pr, self._pg, self._pb)
+        self.rect(0, y, self.w, height, style="F")
+        self.set_text_color(255, 255, 255)
+        self.set_font("Helvetica", style="B", size=font_size)
+        self.set_xy(15, y + (height - font_size * 0.35) / 2)
+        self.cell(self.w - 30, font_size * 0.35 + 1, _sanitize(text.upper()), border=0)
+        self.set_text_color(0, 0, 0)
+
+    def footer(self) -> None:
+        if self.page_no() == 1:
+            return
+        self.set_y(-10)
+        self.set_font("Helvetica", size=7)
+        self.set_text_color(160, 160, 160)
+        self.cell(0, 5, _sanitize(f"  {self._titulo}  ·  Pagina {self.page_no()}"),
+                  align="C", border=0)
+        self.set_text_color(0, 0, 0)
+
+
+def _libro_cover(pdf: _LibroPDF, data: dict) -> None:
+    """Pagina 1: Portada tipo magazine."""
+    pdf.add_page()
+    # Fondo primario
+    pdf._full_bg(pdf._pr, pdf._pg, pdf._pb)
+
+    W, H = pdf.w, pdf.h
+    M = 20  # margen interior
+
+    # Banda decorativa superior (acento claro)
+    pdf.set_fill_color(pdf._lr, pdf._lg, pdf._lb)
+    pdf.rect(0, 0, W, 8, style="F")
+
+    # Badge "LIBRO DIGITAL" arriba izquierda
+    pdf.set_text_color(pdf._lr, pdf._lg, pdf._lb)
+    pdf.set_font("Helvetica", style="B", size=8)
+    pdf.set_xy(M, 14)
+    pdf.cell(0, 5, _sanitize("LIBRO DIGITAL"), border=0)
+
+    # Titulo principal centrado
+    titulo = _sanitize(data.get("titulo", "Sin titulo"))
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", style="B", size=28)
+    pdf.set_xy(M, H * 0.30)
+    pdf.multi_cell(W - M * 2, 12, titulo, border=0, align="C")
+
+    # Línea divisora dorada (acento claro)
+    y_line = pdf.get_y() + 8
+    pdf.set_fill_color(pdf._lr, pdf._lg, pdf._lb)
+    pdf.rect(W / 2 - 25, y_line, 50, 2, style="F")
+
+    # Tagline
+    tagline = _sanitize(data.get("tagline", ""))
+    if tagline:
+        pdf.set_text_color(220, 220, 220)
+        pdf.set_font("Helvetica", style="I", size=12)
+        pdf.set_xy(M, y_line + 10)
+        pdf.multi_cell(W - M * 2, 7, tagline, border=0, align="C")
+
+    # Línea inferior + contacto
+    pdf.set_fill_color(0, 0, 0)
+    pdf.set_fill_color(pdf._lr, pdf._lg, pdf._lb)
+    pdf.rect(0, H - 18, W, 1.5, style="F")
+    contacto = data.get("contacto", {})
+    web = _sanitize(contacto.get("web", ""))
+    if web:
+        pdf.set_text_color(200, 200, 200)
+        pdf.set_font("Helvetica", size=8)
+        pdf.set_xy(M, H - 14)
+        pdf.cell(W - M * 2, 6, web, border=0, align="C")
+
+    pdf.set_text_color(0, 0, 0)
+
+
+def _libro_about(pdf: _LibroPDF, data: dict) -> None:
+    """Pagina 2: ¿Qué es? + ¿Cómo ayuda? + Stats."""
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=18)
+
+    W = pdf.w
+    M = 15
+
+    # Header band
+    pdf._header_band(0, 18, data.get("titulo", ""))
+    y = 25
+
+    # Stats (4 cajas en 2x2)
+    stats = data.get("stats", [])[:4]
+    if stats:
+        box_w = (W - M * 2 - 6) / 2
+        box_h = 22
+        gap = 3
+        pdf.set_font("Helvetica", style="B", size=10)
+        pdf.set_xy(M, y)
+        for i, stat in enumerate(stats):
+            col = i % 2
+            row = i // 2
+            bx = M + col * (box_w + gap)
+            by = y + row * (box_h + gap)
+            # Caja con borde de color
+            pdf.set_fill_color(pdf._lr, pdf._lg, pdf._lb)
+            pdf.rect(bx, by, box_w, box_h, style="FD")
+            # Número grande
+            pdf.set_text_color(pdf._pr, pdf._pg, pdf._pb)
+            pdf.set_font("Helvetica", style="B", size=16)
+            pdf.set_xy(bx + 4, by + 2)
+            pdf.cell(box_w - 8, 10, _sanitize(str(stat.get("valor", ""))), border=0, align="C")
+            # Etiqueta
+            pdf.set_text_color(80, 80, 80)
+            pdf.set_font("Helvetica", size=7)
+            pdf.set_xy(bx + 4, by + 13)
+            pdf.cell(box_w - 8, 6, _sanitize(str(stat.get("etiqueta", ""))), border=0, align="C")
+        y += 2 * (box_h + gap) + 8
+
+    pdf.set_text_color(0, 0, 0)
+
+    # ¿Qué es?
+    pdf._accent_bar(y, 1)
+    y += 4
+    pdf.set_font("Helvetica", style="B", size=10)
+    pdf.set_fill_color(pdf._pr, pdf._pg, pdf._pb)
+    pdf.set_text_color(pdf._pr, pdf._pg, pdf._pb)
+    pdf.set_xy(M, y)
+    pdf.cell(0, 6, _sanitize("QUE ES"), border=0)
+    y = pdf.get_y() + 7
+    pdf.set_text_color(50, 50, 50)
+    pdf.set_font("Helvetica", size=9)
+    pdf.set_xy(M, y)
+    pdf.multi_cell(W - M * 2, 5.5, _sanitize(data.get("que_es", "")),
+                   border=0, align="J")
+    y = pdf.get_y() + 8
+
+    # ¿Cómo ayuda?
+    pdf._accent_bar(y, 1)
+    y += 4
+    pdf.set_font("Helvetica", style="B", size=10)
+    pdf.set_text_color(pdf._pr, pdf._pg, pdf._pb)
+    pdf.set_xy(M, y)
+    pdf.cell(0, 6, _sanitize("COMO AYUDA"), border=0)
+    y = pdf.get_y() + 7
+    pdf.set_text_color(50, 50, 50)
+    pdf.set_font("Helvetica", size=9)
+    pdf.set_xy(M, y)
+    pdf.multi_cell(W - M * 2, 5.5, _sanitize(data.get("como_ayuda", "")),
+                   border=0, align="J")
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_auto_page_break(auto=False)
+
+
+def _libro_section(pdf: _LibroPDF, seccion: dict, idx: int) -> None:
+    """Una pagina por sección del libro."""
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=18)
+
+    W, H = pdf.w, pdf.h
+    M = 15
+
+    # Header con número de sección
+    label = f"SECCION {idx + 1}  ·  {seccion.get('titulo', '').upper()}"
+    pdf._header_band(0, 18, label, font_size=9)
+    y = 24
+
+    # Descripción de la sección
+    descripcion = seccion.get("descripcion", "")
+    if descripcion:
+        pdf.set_font("Helvetica", style="I", size=9)
+        pdf.set_text_color(100, 100, 100)
+        pdf.set_xy(M, y)
+        pdf.multi_cell(W - M * 2, 5.5, _sanitize(descripcion), border=0, align="J")
+        y = pdf.get_y() + 6
+
+    # Divisor
+    pdf._accent_bar(y, 1)
+    y += 6
+
+    # Lista de items en 2 columnas
+    items = seccion.get("items", [])
+    col_w = (W - M * 2 - 6) / 2
+    col_gap = 6
+
+    pdf.set_text_color(40, 40, 40)
+    pdf.set_font("Helvetica", size=8.5)
+
+    for i, item in enumerate(items):
+        col = i % 2
+        bx = M + col * (col_w + col_gap)
+
+        # Bullet punto de color
+        pdf.set_fill_color(pdf._pr, pdf._pg, pdf._pb)
+        pdf.ellipse(bx, y + 1.5, 2.5, 2.5, style="F")
+
+        # Texto del item
+        pdf.set_text_color(40, 40, 40)
+        pdf.set_xy(bx + 5, y)
+        line_count = pdf.multi_cell(col_w - 5, 5, _sanitize(str(item)),
+                                    border=0, align="L",
+                                    dry_run=True, output="LINES")
+        pdf.set_xy(bx + 5, y)
+        pdf.multi_cell(col_w - 5, 5, _sanitize(str(item)), border=0, align="L")
+
+        # Avanzar y sólo cuando la columna derecha (par=izquierda) termina o es último
+        if col == 1 or i == len(items) - 1:
+            line_h = max(len(line_count), 1) * 5 + 3
+            y += line_h
+            if y > H - 25:
+                pdf.add_page()
+                pdf._header_band(0, 18, label, font_size=9)
+                y = 24
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_auto_page_break(auto=False)
+
+
+def _libro_conclusion(pdf: _LibroPDF, data: dict) -> None:
+    """Ultima pagina: Conclusion + Contacto."""
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=18)
+
+    W = pdf.w
+    M = 15
+
+    pdf._header_band(0, 18, "CONCLUSION", font_size=11)
+    y = 28
+
+    conclusion = data.get("conclusion", "")
+    if conclusion:
+        pdf.set_font("Helvetica", style="I", size=10)
+        pdf.set_text_color(50, 50, 50)
+        pdf.set_xy(M, y)
+        pdf.multi_cell(W - M * 2, 6, _sanitize(conclusion), border=0, align="J")
+        y = pdf.get_y() + 12
+
+    # Bloque de contacto
+    contacto = data.get("contacto", {})
+    if any(contacto.values()):
+        # Fondo suave
+        pdf.set_fill_color(pdf._lr, pdf._lg, pdf._lb)
+        pdf.rect(M, y, W - M * 2, 30, style="F")
+
+        pdf.set_text_color(pdf._pr, pdf._pg, pdf._pb)
+        pdf.set_font("Helvetica", style="B", size=10)
+        pdf.set_xy(M + 5, y + 5)
+        pdf.cell(0, 6, _sanitize("CONTACTO"), border=0)
+
+        pdf.set_text_color(50, 50, 50)
+        pdf.set_font("Helvetica", size=9)
+        contact_lines = []
+        if contacto.get("email"):
+            contact_lines.append(_sanitize(contacto["email"]))
+        if contacto.get("telefono"):
+            contact_lines.append(_sanitize(contacto["telefono"]))
+        if contacto.get("web"):
+            contact_lines.append(_sanitize(contacto["web"]))
+
+        for j, line in enumerate(contact_lines):
+            pdf.set_xy(M + 5, y + 14 + j * 6)
+            pdf.cell(0, 5, line, border=0)
+
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_auto_page_break(auto=False)
+
+
+def build_pdf_libro(data: dict) -> bytes:
+    """PDF estilo magazine generado a partir de datos JSON del libro digital."""
+    if not isinstance(data, dict):
+        data = {}
+
+    color = data.get("color_primario", "#2c3e50")
+    titulo = data.get("titulo", "Libro Digital")
+
+    pdf = _LibroPDF(color_primario=color, titulo=titulo)
+
+    _libro_cover(pdf, data)
+    _libro_about(pdf, data)
+
+    for i, seccion in enumerate(data.get("secciones", [])):
+        _libro_section(pdf, seccion, i)
+
+    _libro_conclusion(pdf, data)
+
+    return bytes(pdf.output())
+
+
 def build_pdf_reporte(title: str, content: str) -> bytes:
     """PDF sencillo de respuesta/reporte."""
     pdf = FPDF()
