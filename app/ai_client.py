@@ -303,6 +303,7 @@ def ask_ai_planeamiento(question: str, contexto: str, provider: str | None = Non
 
 def _build_libro_prompt(contexto: str, instrucciones: str) -> str:
     inst_block = f"\nINSTRUCCIONES ADICIONALES:\n{instrucciones}\n" if instrucciones.strip() else ""
+    secciones_rule = "Genera entre 4 y 50 secciones segun la complejidad del tema (decide tu segun el contenido). Si en las instrucciones adicionales se indica un numero exacto de secciones, respeta ese numero."
     return f"""Eres un experto en creacion de libros digitales, brochures corporativos y documentos de marketing de alto nivel.
 Tu tarea es generar el contenido completo de un libro/brochure digital basado en el contexto proporcionado.
 
@@ -340,7 +341,7 @@ Genera el contenido en formato JSON con EXACTAMENTE esta estructura. RESPONDE SO
 }}
 
 REGLAS:
-- Genera entre 4 y 8 secciones segun la complejidad del tema
+- {secciones_rule}
 - Cada seccion debe tener entre 5 y 10 items especificos y relevantes
 - Los stats deben ser numeros creibles y relacionados al contexto (puedes inventarlos si no hay datos)
 - color_primario coherente con industria: tecnologia=#2980b9, salud=#27ae60, educacion=#8e44ad, finanzas=#c0392b, logistica=#e67e22, construccion=#795548
@@ -351,8 +352,6 @@ REGLAS:
 
 def ask_ai_libro(contexto: str, instrucciones: str = "", provider: str | None = None) -> str:
     """Genera contenido JSON estructurado para un libro/brochure digital."""
-    import sys
-    #print(f"[libro] provider={provider} KEY={'SET' if config.ANTHROPIC_API_KEY else 'EMPTY'} AI_PROVIDER={config.AI_PROVIDER}", file=sys.stderr, flush=True)
     prompt = _build_libro_prompt(contexto, instrucciones)
     selected = (provider or config.AI_PROVIDER).lower()
     #print("provider recibido =", provider)

@@ -98,6 +98,14 @@ def query(request: QueryRequest):
         import json as _json
         contexto      = extra.get("contexto", request.question)
         instrucciones = extra.get("instrucciones", "")
+        num_secciones = int(extra["num_secciones"]) if extra.get("num_secciones") else None
+        if num_secciones is None:
+            import re as _re
+            _m = _re.search(r"\b(\d+)\s*p[aá]ginas?\b", request.question, _re.IGNORECASE)
+            if _m:
+                num_secciones = int(_m.group(1))
+        if num_secciones is not None:
+            instrucciones = (instrucciones + f"\nGenera exactamente {num_secciones} secciones.").strip()
         answer        = ask_ai_libro(contexto, instrucciones, provider=request.provider)
         wants_pdf     = extra.get("formato", "").lower() == "pdf" or _wants_pdf(request.question)
         if wants_pdf:
