@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, field_validator
-from typing import Literal
+from typing import Literal, Optional, List, Dict
 from searcher import search_relevant_data, ACCESS_DENIED
 from ai_client import ask_ai, ask_ai_planeamiento, ask_ai_libro, ask_ai_formulario
 from acl import validate_question
@@ -21,8 +21,8 @@ _RESERVED_EXTRA_KEYS = {"tablas", "alias", "contexto", "tipo", "formato", "subti
 class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     question: str
-    provider: Literal["claude", "gpt", "github"] | None = None
-    extra_params: dict | None = None
+    provider: Optional[Literal["claude", "gpt", "github"]] = None
+    extra_params: Optional[Dict] = None
 
     @field_validator("question")
     @classmethod
@@ -36,7 +36,7 @@ class QueryResponse(BaseModel):
     question: str
     context_found: int
     answer: str
-    data: list[dict] | None = None
+    data: Optional[List[Dict]] = None
     provider_used: str
 
 
