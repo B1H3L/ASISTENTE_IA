@@ -1,61 +1,47 @@
-"""
-acl.py — Access Control Layer
-
-Política: DEFAULT DENY.
-Todo lo no explícitamente permitido está bloqueado.
-
-Jerarquía de seguridad:
-  1. TABLE_DENYLIST  → bloqueo permanente, sin excepción
-  2. ALLOWED_TABLES  → allowlist explícita (de config/.env)
-  3. Todo lo demás   → bloqueado automáticamente
-"""
-
 import re
 import config
 
-# ─── DENYLIST DE TABLAS ───────────────────────────────────────────────────────
-# La IA NUNCA puede leer, indexar, resumir ni inferir datos de estas tablas.
+# tablas bloqueadas permanentemente
 TABLE_DENYLIST: set[str] = {
-    # Identidad corporativa y datos maestros de empresa
+    # empresa
     "empresa", "empresas", "company", "companies",
-    # Usuarios y autenticación
+    # usuarios y auth
     "users", "user", "usuarios", "usuario",
     "admins", "admin", "administradores",
     "roles", "permissions", "permisos",
     "sessions", "session", "sesiones",
     "password_resets", "verification_tokens",
     "oauth_tokens", "oauth_clients",
-    # Empleados y RRHH
+    # rrhh
     "employees", "employee", "empleados", "empleado",
     "staff", "personal",
-    # Pagos y facturación
+    # pagos
     "payments", "payment", "pagos", "pago",
     "billing", "facturas", "factura",
     "invoices", "invoice",
     "transactions", "transaction",
-    # Claves y secretos
+    # claves
     "api_keys", "api_key", "apikeys",
     "secrets", "secret", "secretos",
     "tokens", "token",
-    # Configuración interna
+    # config interna
     "internal_config", "configuracion",
     "config", "settings",
-    # Auditoría y logs
+    # logs
     "logs", "log", "audit_log", "audit_logs",
     "activity_log", "access_log",
-    # Datos privados de clientes
+    # datos privados
     "customer_private_data", "private_data",
     "customers_sensitive",
-    # Migraciones / meta
+    # migraciones
     "migrations", "schema_migrations",
     "django_migrations", "flyway_schema_history",
 }
 
-# ─── PATRONES: CONSULTA MASIVA DE DATOS ──────────────────────────────────────
-# Detectan intención explícita de extraer grandes volúmenes o estructura de DB.
+# patrones: consulta masiva de datos
 _BULK_PATTERNS: list[re.Pattern] = [
     re.compile(p, re.IGNORECASE) for p in [
-        r"\bselect\s+\*",                                          # SELECT *
+        r"\bselect\s+\*",
         r"\btodos\s+los\s+(datos|registros|usuarios|campos|empleados|clientes)",
         r"\blista\s+(completa|total|entera|de\s+todos)",
         r"\bdame\s+todos\s+los\s+(datos|registros|usuarios|empleados|clientes|campos|tablas)\b",
@@ -76,8 +62,7 @@ _BULK_PATTERNS: list[re.Pattern] = [
     ]
 ]
 
-# ─── PATRONES: PELIGRO SEMÁNTICO ─────────────────────────────────────────────
-# Detectan reformulaciones peligrosas aunque no usen palabras clave obvias.
+# patrones: peligro semántico
 _SEMANTIC_DANGER_PATTERNS: list[re.Pattern] = [
     re.compile(p, re.IGNORECASE) for p in [
         r"\bqu[eé]\s+contiene\s+(la\s+tabla|la\s+base|el\s+schema|la\s+bd)",
@@ -109,10 +94,6 @@ _SEMANTIC_DANGER_PATTERNS: list[re.Pattern] = [
 
 
 def is_table_allowed(table_name: str) -> bool:
-    """
-    DEFAULT DENY: retorna True SOLO si la tabla está en ALLOWED_TABLES
-    Y NO está en TABLE_DENYLIST.
-    """
     name = table_name.lower().strip()
     if name in TABLE_DENYLIST:
         return False
@@ -120,24 +101,14 @@ def is_table_allowed(table_name: str) -> bool:
 
 
 def is_bulk_query(question: str) -> bool:
-    """Detecta intención de extracción masiva de datos."""
     return any(p.search(question) for p in _BULK_PATTERNS)
 
 
 def is_semantically_dangerous(question: str) -> bool:
-    """Detecta intención peligrosa reformulada semánticamente."""
     return any(p.search(question) for p in _SEMANTIC_DANGER_PATTERNS)
 
 
 def validate_question(question: str) -> tuple[bool, str]:
-    """
-    Validación integral de la pregunta ANTES de ejecutar cualquier búsqueda en DB.
-    Aplica política DEFAULT DENY sobre intención.
-
-    Retorna:
-        (True, "")          → pregunta permitida
-        (False, "motivo")   → pregunta bloqueada con motivo
-    """
     if is_bulk_query(question):
         return False, "Consultas masivas de datos no están permitidas."
     if is_semantically_dangerous(question):

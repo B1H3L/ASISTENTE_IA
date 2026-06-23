@@ -60,16 +60,10 @@ PREGUNTA:
 RESPUESTA:"""
 
 
-def _ask_claude(prompt: str) -> str:
-    from pathlib import Path
-    key = config.ANTHROPIC_API_KEY
+def _ask_claude(prompt: str, api_key: str | None = None) -> str:
+    key = api_key
     if not key:
-        for _l in (Path(__file__).parent / ".env").read_text("utf-8-sig").splitlines():
-            if _l.strip().startswith("ANTHROPIC_API_KEY="):
-                key = _l.strip().split("=", 1)[1].strip()
-                break
-    if not key:
-        return "Error: ANTHROPIC_API_KEY no esta configurada en .env"
+        return "Error: API key de Claude no configurada en IA_CONFIG"
     try:
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -90,16 +84,7 @@ def _ask_claude(prompt: str) -> str:
     except requests.exceptions.HTTPError as e:
         body = e.response.json() if e.response else {}
         if body.get("error", {}).get("type") == "not_found_error":
-            try:
-                r = requests.get(
-                    "https://api.anthropic.com/v1/models",
-                    headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                    timeout=10
-                )
-                models = [m["id"] for m in r.json().get("data", [])]
-                return f"Error: modelo '{config.CLAUDE_MODEL}' no existe. Modelos disponibles: {', '.join(models)}"
-            except Exception:
-                return f"Error: modelo '{config.CLAUDE_MODEL}' no encontrado. Revisa CLAUDE_MODEL en .env"
+            return f"Error: modelo '{config.CLAUDE_MODEL}' no encontrado. Revisa CLAUDE_MODEL en .env"
         return f"Error al consultar Claude: {body}"
     except requests.exceptions.Timeout:
         return "Error: Claude tardo demasiado en responder."
@@ -107,14 +92,15 @@ def _ask_claude(prompt: str) -> str:
         return f"Error al consultar Claude: {e}"
 
 
-def _ask_gpt(prompt: str) -> str:
-    if not config.GITHUB_TOKEN:
-        return "Error: GITHUB_TOKEN no esta configurado en .env (obtener en GitHub -> Settings -> Developer settings -> Personal access tokens)"
+def _ask_gpt(prompt: str, api_key: str | None = None) -> str:
+    token = api_key
+    if not token:
+        return "Error: API key de GitHub/GPT no configurada en IA_CONFIG"
     try:
         response = requests.post(
             "https://models.inference.ai.azure.com/chat/completions",
             headers={
-                "Authorization": f"Bearer {config.GITHUB_TOKEN}",
+                "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json"
             },
             json={
@@ -139,44 +125,20 @@ def _ask_gpt(prompt: str) -> str:
         return f"Error al consultar GPT: {e}"
 
 
-
-def _ask_ollama(prompt: str) -> str:
-    try:
-        response = requests.post(
-            f"{config.AI_API_URL}/api/generate",
-            json={"model": config.AI_MODEL, "prompt": prompt, "stream": False},
-            timeout=180
-        )
-        response.raise_for_status()
-        return response.json().get("response", "").strip()
-    except requests.exceptions.ConnectionError:
-        return f"Error: No se pudo conectar con Ollama en {config.AI_API_URL}"
-    except requests.exceptions.Timeout:
-        return "Error: Ollama tardo demasiado en responder."
-    except Exception as e:
-        try:
-            detail = e.response.text if hasattr(e, "response") else str(e)
-        except Exception:
-            detail = str(e)
-        return f"Error al consultar Ollama: {detail}"
-
-
 # ── Registry de proveedores ────────────────────────────────────────────────
-# Para agregar un nuevo proveedor: añade una entrada aqui y crea su _ask_xxx.
 _PROVIDERS: dict[str, object] = {
     "claude": _ask_claude,
     "gpt":    _ask_gpt,
-    "github": _ask_gpt,    
-    "ollama": _ask_ollama,
+    "github": _ask_gpt,
 }
 
 
-def _call_provider(prompt: str, selected: str) -> str:
+def _call_provider(prompt: str, selected: str, api_key: str | None = None) -> str:
     fn = _PROVIDERS.get(selected)
     if fn is None:
         available = ", ".join(_PROVIDERS)
         return f"Error: proveedor '{selected}' no disponible. Opciones: {available}."
-    return fn(prompt)
+    return fn(prompt, api_key=api_key)
 
 
 def _clean_markdown(text: str) -> str:
@@ -218,11 +180,11 @@ def _clean_markdown(text: str) -> str:
     return human.strip() + ("\n\n" + json_block if json_block else "")
 
 
-def ask_ai(question: str, context: list[dict], provider: str | None = None, system_context: str | None = None) -> str:
+def ask_ai(question: str, context: list[dict], provider: str | None = None, system_context: str | None = None, api_key: str | None = None) -> str:
     """Envia la pregunta y el contexto al proveedor de IA. Filtra la respuesta antes de devolverla."""
     prompt = _build_prompt(question, context, system_context=system_context)
     selected = (provider or config.AI_PROVIDER).lower()
-    raw = _call_provider(prompt, selected)
+    raw = _call_provider(prompt, selected, api_key=api_key)
 
     cleaned = _clean_markdown(raw)
 
@@ -294,11 +256,11 @@ INSTRUCCIONES DE CONTENIDO
 """
 
 
-def ask_ai_planeamiento(question: str, contexto: str, provider: str | None = None) -> str:
+def ask_ai_planeamiento(question: str, contexto: str, provider: str | None = None, api_key: str | None = None) -> str:
     """Genera contenido estructurado para planificacion educativa peruana."""
     prompt = _build_planeamiento_prompt(question, contexto)
     selected = (provider or config.AI_PROVIDER).lower()
-    return _call_provider(prompt, selected)
+    return _call_provider(prompt, selected, api_key=api_key)
 
 
 def _build_libro_prompt(contexto: str, instrucciones: str) -> str:
@@ -350,11 +312,81 @@ REGLAS:
 - SOLO JSON, nada mas"""
 
 
-def ask_ai_libro(contexto: str, instrucciones: str = "", provider: str | None = None) -> str:
+def ask_ai_libro(contexto: str, instrucciones: str = "", provider: str | None = None, api_key: str | None = None) -> str:
     """Genera contenido JSON estructurado para un libro/brochure digital."""
     prompt = _build_libro_prompt(contexto, instrucciones)
     selected = (provider or config.AI_PROVIDER).lower()
-    #print("provider recibido =", provider)
-    #print("AI_PROVIDER =", config.AI_PROVIDER)
-    #print("selected =", selected)
-    return _call_provider(prompt, selected)
+    return _call_provider(prompt, selected, api_key=api_key)
+
+
+def _build_formulario_prompt(descripcion: str, contexto: str) -> str:
+    ctx_block = f"\nCONTEXTO ADICIONAL:\n{contexto}\n" if contexto.strip() else ""
+    return f"""Eres un experto en diseño de formularios digitales. Tu tarea es generar la estructura completa de un formulario basado en la descripcion del usuario.
+
+DESCRIPCION DEL FORMULARIO:
+{descripcion}
+{ctx_block}
+TIPOS DE CAMPOS DISPONIBLES:
+- text: texto libre (sin opciones)
+- number: numerico (sin opciones)
+- select: lista desplegable (REQUIERE opciones)
+- checkbox: seleccion multiple (REQUIERE opciones)
+- radio: seleccion unica (REQUIERE opciones)
+- date: fecha (sin opciones)
+- datetime-local: fecha y hora (sin opciones)
+- time: hora (sin opciones)
+- file: adjunto de archivo (sin opciones)
+- content: contenido enriquecido / instrucciones (sin opciones)
+
+REGLAS ABSOLUTAS:
+- RESPONDE SOLO CON JSON PURO, sin markdown, sin explicaciones, sin texto adicional.
+- El campo "codigo" debe ser una variable unica en snake_case, sin espacios, sin tildes, sin caracteres especiales. Ejemplo: nombre_estudiante, fecha_nacimiento, nivel_logro.
+- Los codigos deben ser unicos dentro de todo el formulario.
+- "columna" indica cuantas columnas ocupa el campo en la vista (valores: 3, 4, 6, 12). Usa 6 por defecto, 12 para campos amplios como content o file, 3 o 4 para campos cortos.
+- "orden" es la posicion del campo dentro de su seccion, comenzando en 1.
+- Para select/checkbox/radio: "opciones" debe tener al menos 2 items con "opcdes" (label) y "opcval" (valor interno).
+- Para otros tipos: "opciones" debe ser una lista vacia [].
+- Genera entre 1 y 5 secciones segun la complejidad del formulario.
+- Cada seccion debe tener entre 2 y 12 campos relevantes al tema.
+- El contenido debe ser especifico y util para el contexto descrito.
+
+ESTRUCTURA JSON EXACTA:
+{{
+  "nombre": "Nombre descriptivo del formulario",
+  "secciones": [
+    {{
+      "nombre": "Nombre de la seccion",
+      "orden": 1,
+      "campos": [
+        {{
+          "tipo": "text",
+          "contenido": "Label o pregunta del campo",
+          "codigo": "variable_unica",
+          "orden": 1,
+          "columna": 6,
+          "opciones": []
+        }},
+        {{
+          "tipo": "select",
+          "contenido": "Label del campo con opciones",
+          "codigo": "otra_variable",
+          "orden": 2,
+          "columna": 6,
+          "opciones": [
+            {{"opcdes": "Opcion 1", "opcval": "opcion_1"}},
+            {{"opcdes": "Opcion 2", "opcval": "opcion_2"}}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+
+SOLO JSON, nada mas."""
+
+
+def ask_ai_formulario(descripcion: str, contexto: str = "", provider: str | None = None, api_key: str | None = None) -> str:
+    """Genera estructura JSON completa de un formulario dinamico a partir de una descripcion."""
+    prompt = _build_formulario_prompt(descripcion, contexto)
+    selected = (provider or config.AI_PROVIDER).lower()
+    return _call_provider(prompt, selected, api_key=api_key)

@@ -1,24 +1,14 @@
-"""
-Carga y cachea en memoria el esquema de las tablas permitidas.
-Se inicializa una vez al arrancar el servidor llamando a load_schema().
-Es 100% dinamico: lee las tablas que esten en config.ALLOWED_TABLES.
-Tambien descubre relaciones FK entre tablas para habilitar JOINs automaticos.
-"""
 import config
 from db import get_connection
 
-# Cache en memoria: {table_name: [col1, col2, ...]}
+# cache columnas: {tabla: [col1, col2, ...]}
 _schema_cache: dict[str, list[str]] = {}
 
-# Cache de FKs: {source_table: [{"source_col": str, "target_table": str, "target_col": str}]}
+# cache fks: {tabla: [{source_col, target_table, target_col}]}
 _fk_cache: dict[str, list[dict]] = {}
 
 
 def load_schema() -> None:
-    """
-    Lee information_schema.columns para todas las tablas en ALLOWED_TABLES.
-    Llama a esta funcion una vez al iniciar el servidor (en main.py).
-    """
     global _schema_cache
     if not config.ALLOWED_TABLES:
         return
@@ -38,24 +28,17 @@ def load_schema() -> None:
         rows = cur.fetchall()
         cur.close()
         conn.close()
-
         schema: dict[str, list[str]] = {}
         for table, col in rows:
             schema.setdefault(table, []).append(col)
-
         _schema_cache = schema
         total_cols = sum(len(v) for v in schema.values())
-        print(f"[schema_loader] Esquema cargado: {len(schema)} tabla(s), {total_cols} columna(s).")
+        print(f"[schema_loader] {len(schema)} tabla(s), {total_cols} columna(s).")
     except Exception as e:
-        print(f"[schema_loader] Advertencia: no se pudo cargar el esquema: {e}")
+        print(f"[schema_loader] Error cargando esquema: {e}")
 
 
 def load_foreign_keys() -> None:
-    """
-    Descubre relaciones FK entre las tablas permitidas leyendo information_schema.
-    Solo registra relaciones donde AMBAS tablas (origen y destino) esten en ALLOWED_TABLES.
-    Esto garantiza que el JOIN automatico nunca accede a tablas no autorizadas.
-    """
     global _fk_cache
     if not config.ALLOWED_TABLES:
         return
@@ -77,36 +60,29 @@ def load_foreign_keys() -> None:
                 AND rc.unique_constraint_schema = ccu.constraint_schema
             WHERE kcu.table_schema = 'public'
             ORDER BY
-                -- Preferir FKs donde source_col = target_col (relacion directa de identidad)
                 CASE WHEN kcu.column_name = ccu.column_name THEN 0 ELSE 1 END,
                 kcu.table_name, kcu.column_name
         """)
         rows = cur.fetchall()
         cur.close()
         conn.close()
-
         fk: dict[str, list[dict]] = {}
         for source_table, source_col, target_table, target_col in rows:
-            # Solo registrar si AMBAS tablas estan en ALLOWED_TABLES
+            # solo si ambas tablas están en ALLOWED_TABLES
             if source_table in config.ALLOWED_TABLES and target_table in config.ALLOWED_TABLES:
                 fk.setdefault(source_table, []).append({
                     "source_col": source_col,
                     "target_table": target_table,
                     "target_col": target_col,
                 })
-
         _fk_cache = fk
         total_fks = sum(len(v) for v in fk.values())
-        print(f"[schema_loader] FK entre tablas permitidas: {total_fks} relacion(es) encontradas.")
+        print(f"[schema_loader] {total_fks} FK(s) entre tablas permitidas.")
     except Exception as e:
-        print(f"[schema_loader] Advertencia: no se pudo cargar FKs: {e}")
+        print(f"[schema_loader] Error cargando FKs: {e}")
 
 
 def get_schema_text() -> str:
-    """
-    Devuelve texto compacto del esquema para incluir en el prompt del AI.
-    Incluye descripciones y relaciones FK si existen.
-    """
     if not _schema_cache:
         return ""
     lines = []
@@ -118,27 +94,19 @@ def get_schema_text() -> str:
         lines.append("\nRelaciones entre tablas:")
         for src, rels in _fk_cache.items():
             for r in rels:
-                lines.append(
-                    f"  {src}.{r['source_col']} -> {r['target_table']}.{r['target_col']}"
-                )
+                lines.append(f"  {src}.{r['source_col']} -> {r['target_table']}.{r['target_col']}")
     return "\n".join(lines)
 
 
 def get_table_columns(table: str) -> list[str]:
-    """Devuelve columnas de una tabla o lista vacia si no esta en cache."""
     return _schema_cache.get(table.lower(), [])
 
 
 def get_fk_joins(table: str) -> list[dict]:
-    """
-    Devuelve las relaciones FK que salen de 'table' hacia otras tablas permitidas.
-    Cada item: {"source_col": str, "target_table": str, "target_col": str}
-    """
     return _fk_cache.get(table.lower(), [])
 
 
 def reload_schema() -> None:
-    """Recarga el esquema y FKs desde la DB (util si cambian las tablas en caliente)."""
     global _schema_cache, _fk_cache
     _schema_cache = {}
     _fk_cache = {}

@@ -8,11 +8,11 @@ from schema_loader import get_table_columns, get_fk_joins
 
 ACCESS_DENIED = "__ACCESS_DENIED__"
 
-# Maximo de filas permitidas por tabla (anti-volcado)
+# límite de filas por tabla
 _MAX_ROWS_PER_TABLE = 100
 _MAX_ROWS_PER_KEYWORD = 50
 
-# Palabras que no deben usarse como filtros de busqueda
+# palabras ignoradas como filtros de búsqueda
 _STOP_WORDS = {
     "dime", "dame", "todos", "todas", "cuales", "cual", "lista", "muestra",
     "registros", "datos", "tabla", "tablas", "tiene", "hay", "cuantos",
@@ -25,24 +25,17 @@ _STOP_WORDS = {
 
 
 def _extract_column_filter(question: str, columns: list[str]) -> tuple[str, str] | None:
-    """
-    Detecta patrones de filtro exacto en la pregunta natural.
-
-
-    La columna se valida contra el schema real (nunca se inyecta user input).
-    Devuelve (nombre_columna_real, valor) o None.
-    """
     q = question.lower()
     cols_lower = {c.lower(): c for c in columns}
 
-    # Patron 1: con/where/donde <col> [=:]? <val>
+    # patrón: con/where/donde <col> <val>
     m = re.search(r'\b(?:con|where|donde|igual a|es)\s+(\w+)\s*[=:]?\s*[\'"]?(\w+)[\'"]?', q)
     if m:
         col_candidate, val_candidate = m.group(1), m.group(2)
         if col_candidate in cols_lower and len(val_candidate) > 1:
             return (cols_lower[col_candidate], val_candidate)
 
-    # Patron 2: <col> = <val> o <col>: <val>
+    # patrón: <col> = <val>
     m = re.search(r'\b(\w+)\s*[=:]\s*[\'"]?(\w+)[\'"]?', q)
     if m:
         col_candidate, val_candidate = m.group(1), m.group(2)
@@ -60,22 +53,16 @@ def _build_joined_query(
     where_params: list = [],
     limit: int = _MAX_ROWS_PER_TABLE,
 ) -> list[dict]:
-    """
-    Construye y ejecuta un SELECT con LEFT JOINs automaticos hacia tablas
-    relacionadas por FK que tambien esten en ALLOWED_TABLES.
-    Las columnas de tablas relacionadas se prefijan con el nombre de la tabla
-    para evitar colisiones: persona__pernombre, persona__perapellido, etc.
-    """
     fk_joins = get_fk_joins(table_name)
 
-    # Columnas de la tabla principal con alias tabla__columna
+    # columnas principales con alias tabla__col
     select_parts = [f'"{table_name}"."{c}" AS "{table_name}__{c}"' for c in columns]
     join_parts: list[str] = []
-    joined_cols: dict[str, list[str]] = {}  # {alias: [col, ...]}
+    joined_cols: dict[str, list[str]] = {}
 
     for rel in fk_joins:
         target = rel["target_table"]
-        if target in joined_cols:  # ya unido por otro FK a la misma tabla
+        if target in joined_cols:
             continue
         src_col = rel["source_col"]
         tgt_col = rel["target_col"]
@@ -98,8 +85,6 @@ def _build_joined_query(
 
     results = []
     for row in cursor.fetchall():
-        # Reconstruir dict aplanado: {columna: valor} sin el prefijo de tabla
-        # para que la IA lo lea naturalmente; pero incluimos la tabla de origen
         flat: dict = {}
         idx = 0
         for c in columns:
@@ -112,24 +97,14 @@ def _build_joined_query(
 
 
 def search_relevant_data(question: str, extra_params: dict | None = None) -> list[dict] | str:
-    """
-    Firewall entre la IA y la base de datos.
-
-    Politica DEFAULT DENY:
-    - Solo consulta tablas en ALLOWED_TABLES que NO esten en TABLE_DENYLIST.
-    - Si extra_params.tablas viene en el request, usa solo esas tablas
-      (intersectadas con ALLOWED_TABLES como techo de seguridad).
-    - Limita filas para prevenir volcados masivos.
-    - Sanitiza columnas sensibles antes de devolver.
-    """
-    # Tablas efectivas para este request
-    # Si el cliente manda "tablas", se usan solo esas — siempre dentro de ALLOWED_TABLES
+    # tablas efectivas para este request
     if extra_params and extra_params.get("tablas"):
         requested = {t.strip().lower() for t in extra_params["tablas"] if t.strip()}
-        effective_allowed = requested & config.ALLOWED_TABLES  # techo de seguridad
+        effective_allowed = requested & config.ALLOWED_TABLES
     else:
         effective_allowed = config.ALLOWED_TABLES
-    # Aliases por request: base del .env + overrides del cliente (solo tablas en effective_allowed)
+
+    # aliases: base del .env + overrides del cliente
     request_aliases = dict(config.TABLE_ALIASES)
     if extra_params and isinstance(extra_params.get("alias"), dict):
         for logical, real in extra_params["alias"].items():
@@ -137,6 +112,7 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
                 real_lower = real.strip().lower()
                 if real_lower in effective_allowed:
                     request_aliases[logical.strip().lower()] = real_lower
+
     words = {w.strip("?.,;:()[]{}'").lower() for w in question.split()}
 
     results = []
@@ -144,65 +120,52 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
     cursor = conn.cursor()
 
     try:
-        # Obtener todas las tablas del schema publico
-        cursor.execute("""
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'public'
-        """)
+        # tablas del schema público
+        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
         all_tables = {row[0].lower() for row in cursor.fetchall()}
 
         tables_in_question = words & all_tables
 
-        # Fuzzy: tambien probar sin 's' final (plural en espanol, ej: "configuras" -> "configura")
+        # plural en español (sin 's')
         for w in list(words):
             if w.endswith("s") and w[:-1] in all_tables:
                 tables_in_question.add(w[:-1])
 
-        # Aliases: si el usuario dice "alumno" pero la tabla real es "ist_alumno"
-        # config.TABLE_ALIASES = {"alumno": "ist_alumno", ...}
+        # aliases exactos y plurales
         for w in list(words):
-            # alias exacto
             real = request_aliases.get(w)
             if real and real in all_tables:
                 tables_in_question.add(real)
-            # alias plural (sin 's')
             if w.endswith("s"):
                 real = request_aliases.get(w[:-1])
                 if real and real in all_tables:
                     tables_in_question.add(real)
 
-        # Descripciones: si el usuario dice "alumnos" y TABLE_DESCRIPTIONS tiene
-        # ist_alumno -> {"alumno", "alumnos", "estudiante", ...}, matchea ist_alumno
-        # Solo aplica a tablas que esten en effective_allowed
+        # detección semántica por palabras clave de TABLE_DESCRIPTIONS
         for real_table, keywords in config.TABLE_DESCRIPTIONS.items():
             if real_table in all_tables and real_table in effective_allowed and words & keywords:
                 tables_in_question.add(real_table)
 
-        # DENYLIST CHECK: si menciona cualquier tabla prohibida -> denegar
-        denylist_mentioned = tables_in_question & TABLE_DENYLIST
-        if denylist_mentioned:
+        # denylist check
+        if tables_in_question & TABLE_DENYLIST:
             return ACCESS_DENIED
 
-        # ALLOWLIST CHECK: solo tablas en effective_allowed (ALLOWED_TABLES o subconjunto del cliente)
-        matched_tables = {t for t in tables_in_question if t in effective_allowed and not (t in TABLE_DENYLIST)}
+        # allowlist check
+        matched_tables = {t for t in tables_in_question if t in effective_allowed and t not in TABLE_DENYLIST}
 
-        # Si menciono tablas fuera de effective_allowed -> denegar
-        unmatched = tables_in_question - matched_tables - TABLE_DENYLIST
-        if unmatched:
+        if tables_in_question - matched_tables - TABLE_DENYLIST:
             return ACCESS_DENIED
 
         if matched_tables:
-            # Palabras clave utiles: no son nombres de tabla, no son stop words, len > 3
+            # keywords útiles: no son tablas, no son stop words, len > 3
             extra_keywords = [
                 w for w in words
-                if w not in all_tables
-                and w not in _STOP_WORDS
-                and len(w) > 3
+                if w not in all_tables and w not in _STOP_WORDS and len(w) > 3
             ]
 
             for table_name in matched_tables:
                 try:
-                    # Obtener columnas de la tabla (nunca SELECT *)
+                    # columnas de la tabla
                     cursor.execute("""
                         SELECT column_name FROM information_schema.columns
                         WHERE table_schema = 'public' AND table_name = %s
@@ -212,12 +175,10 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
                     if not columns:
                         continue
 
-                    col_list = ", ".join(f'"{c}"' for c in columns)
-
                     rows_before = len(results)
 
                     if extra_keywords:
-                        # Intentar detectar filtro exacto: "CON configcod INTRANET"
+                        # filtro exacto por columna
                         col_filter = _extract_column_filter(question, columns)
                         if col_filter:
                             col_name, val = col_filter
@@ -227,7 +188,7 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
                                 where_params=[val.lower()],
                             ))
                         else:
-                            # Fallback: buscar keywords con LIKE en columnas de texto
+                            # búsqueda LIKE en columnas de texto
                             cursor.execute("""
                                 SELECT column_name FROM information_schema.columns
                                 WHERE table_schema = 'public' AND table_name = %s
@@ -248,57 +209,48 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
                                         except Exception:
                                             conn.rollback()
                             else:
-                                results.extend(_build_joined_query(
-                                    table_name, columns, cursor
-                                ))
+                                results.extend(_build_joined_query(table_name, columns, cursor))
 
-                    # Si la tabla fue detectada explicitamente pero los keywords no
-                    # produjeron resultados (son palabras descriptivas de la pregunta,
-                    # no valores reales de la DB), hacer un query general sin filtro.
+                    # si no hubo resultados, query general sin filtro
                     if len(results) == rows_before:
-                        results.extend(_build_joined_query(
-                            table_name, columns, cursor
-                        ))
-                    elif not extra_keywords:
-                        pass  # ya hay resultados del bloque extra_keywords=False
+                        results.extend(_build_joined_query(table_name, columns, cursor))
 
                 except Exception:
                     conn.rollback()
 
         else:
-            # Busqueda por palabras clave solo en tablas de la allowlist efectiva
+            # búsqueda por keywords en tablas de la allowlist
             safe_tables = {t for t in all_tables if is_table_allowed(t)}
             if not safe_tables:
                 return []
 
-            allowed_list = ", ".join(f"'{t}'" for t in safe_tables)
             keywords = [w for w in words if len(w) > 3]
             if not keywords:
                 return []
 
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT table_name, column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name IN ({allowed_list})
+                  AND table_name = ANY(%s)
                   AND data_type IN ('text', 'character varying', 'varchar')
-            """)
+            """, (list(safe_tables),))
             text_columns = cursor.fetchall()
 
             for keyword in keywords:
                 for table_name, column_name in text_columns:
                     try:
+                        fallback_cols = get_table_columns(table_name)
+                        if not fallback_cols:
+                            continue
+                        fallback_col_sql = ", ".join(f'"{c}"' for c in fallback_cols)
                         cursor.execute(
-                            f'SELECT * FROM "{table_name}" WHERE LOWER("{column_name}") LIKE %s LIMIT %s',
+                            f'SELECT {fallback_col_sql} FROM "{table_name}" WHERE LOWER("{column_name}") LIKE %s LIMIT %s',
                             (f"%{keyword}%", _MAX_ROWS_PER_KEYWORD)
                         )
                         rows = cursor.fetchall()
-                        col_names = [desc[0] for desc in cursor.description]
                         for row in rows:
-                            results.append({
-                                "tabla": table_name,
-                                "datos": dict(zip(col_names, row))
-                            })
+                            results.append({"tabla": table_name, "datos": dict(zip(fallback_cols, row))})
                     except Exception:
                         conn.rollback()
                         continue
@@ -309,7 +261,7 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
         cursor.close()
         conn.close()
 
-    # Eliminar duplicados
+    # eliminar duplicados
     seen: set[str] = set()
     unique: list[dict] = []
     for r in results:
@@ -318,5 +270,4 @@ def search_relevant_data(question: str, extra_params: dict | None = None) -> lis
             seen.add(key)
             unique.append(r)
 
-    # Sanitizar columnas sensibles antes de entregar al modelo de IA
     return sanitize_context(unique)
