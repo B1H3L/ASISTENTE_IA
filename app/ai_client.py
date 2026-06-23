@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import requests
 import config
 from sanitizer import post_filter_response
